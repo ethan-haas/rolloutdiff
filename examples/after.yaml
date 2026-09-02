@@ -1,0 +1,27 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+spec:
+  replicas: 0
+  selector:
+    matchLabels: {app: web}
+  template:
+    metadata:
+      labels: {app: web}
+    spec:
+      containers:
+      - name: app
+        image: nginx:1.26
+        resources:
+          limits: {cpu: 1000m, memory: 1Gi}
+        securityContext: {privileged: true}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: data
+spec:
+  storageClassName: slow
+  resources:
+    requests: {storage: 5Gi}

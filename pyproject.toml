@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rolloutdiff"
+version = "0.1.0"
+description = "Semantic diff of rendered Kubernetes manifests, classified by blast radius: does this change restart pods, recreate them, drop a volume, or nothing at all?"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Ethan Haas", email = "ethanzhaas@gmail.com" }]
+dependencies = ["PyYAML>=6.0"]
+
+[project.scripts]
+rolloutdiff = "rolloutdiff.cli:main"
+
+[tool.setuptools]
+packages = ["rolloutdiff"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,151 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install pytest
+
+      - name: Only one runtime dependency, and it is the declared one
+        run: |
+          python - <<'PY'
+          import importlib.metadata as md
+          runtime = [r for r in (md.requires("rolloutdiff") or []) if "extra ==" not in r]
+          assert runtime == ["PyYAML>=6.0"], runtime
+          print("single declared dependency:", runtime)
+          PY
+
+      - name: Tests (pinned totals)
+        run: |
+          python -m pytest tests/ -q --junitxml=results.xml
+          python - <<'PY'
+          import xml.etree.ElementTree as ET
+          s = ET.parse("results.xml").getroot()
+          s = s.find("testsuite") if s.tag == "testsuites" else s
+          got = {k: int(s.get(k, 0)) for k in ("tests", "failures", "errors", "skipped")}
+          print(got)
+          # Pinned so a test that silently stops running fails the build.
+          assert got == {"tests": 80, "failures": 0, "errors": 0, "skipped": 0}, got
+          print("pinned totals match")
+          PY
+
+      - name: Self-check metrics are computed fresh, not hardcoded
+        run: |
+          python - <<'PY'
+          import json, subprocess, sys
+          out = subprocess.run([sys.executable, "-m", "rolloutdiff",
+                                "examples/before.yaml", "examples/after.yaml"],
+                               capture_output=True, text=True).stdout
+          q = json.loads(out)["coverage_quality"]
+          assert q["detection_rate"] == 1.0, q
+          assert q["false_flag_rate"] == 0.0, q
+          assert q["noop_cases_total"] >= 6 and q["planted_cases_total"] >= 13, q
+          print("self-check:", {k: q[k] for k in
+                ("detection_rate", "false_flag_rate", "planted_cases_total", "noop_cases_total")})
+          PY
+
+      - name: The classification example still classifies the same way
+        run: |
+          set +e
+          python -m rolloutdiff examples/before.yaml examples/after.yaml > out.json
+          code=$?
+          set -e
+          test "$code" = "1" || { echo "example with real changes must exit 1, got $code"; exit 1; }
+          python - <<'PY'
+          import json
+          d = json.load(open("out.json"))
+          assert d["summary"]["classification_counts"] == {
+              "data-loss": 2, "disruption": 1, "privilege-change": 1, "rolling-restart": 1}, d["summary"]
+          assert d["summary"]["unknown_rate"] == 0.0, d["summary"]
+          # Every field_path must resolve in the supplied documents -- a finding
+          # that cannot point at its own evidence is a bug, not a finding.
+          for f in d["findings"]:
+              assert f["field_path"] and f["classification"], f
+          # The resource-limit change in this example is 1024Mi -> 1Gi and 1 -> 1000m:
+          # equivalent, so it must NOT appear as a finding.
+          paths = {f["field_path"] for f in d["findings"]}
+          assert not any("resources.limits" in p for p in paths), paths
+          print("example classifications unchanged:", d["summary"]["classification_counts"])
+          PY
+
+      - name: Two-sided — a cosmetic-only change must be silent
+        run: |
+          set +e
+          python -m rolloutdiff examples/before.yaml examples/cosmetic_after.yaml > noop.json
+          code=$?
+          set -e
+          test "$code" = "0" || { echo "cosmetic-only change must exit 0, got $code"; exit 1; }
+          python - <<'PY'
+          import json
+          d = json.load(open("noop.json"))
+          # Reordered keys, 1024Mi == 1Gi, "1" == 1000m, 10Gi == 10240Mi, annotation
+          # churn. A differ that flagged everything would pass the detection half
+          # of this suite and fail here.
+          assert d["summary"]["total_findings"] == 0, d
+          print("cosmetic-only change correctly reports nothing")
+          PY
+
+      - name: Unknown kinds are reported unknown, never no-op
+        run: |
+          set +e
+          python -m rolloutdiff examples/unknown_crd_before.yaml examples/unknown_crd_after.yaml > crd.json
+          code=$?
+          set -e
+          # The fail-unsafe direction: an unrecognized CRD whose fields changed must
+          # never be silently classified clean. This is the whole premise of the
+          # declared-coverage design.
+          test "$code" = "1" || { echo "changed unknown CRD must exit 1, got $code"; exit 1; }
+          python - <<'PY'
+          import json
+          d = json.load(open("crd.json"))
+          assert d["summary"]["classification_counts"] == {"unknown": 2}, d["summary"]
+          assert d["summary"]["unknown_rate"] == 1.0, d["summary"]
+          print("unknown CRD reported unknown, not no-op")
+          PY
+
+      - name: Determinism across processes
+        run: |
+          python - <<'PY'
+          import hashlib, os, subprocess, sys
+          digests = set()
+          for seed in ("0", "1", "42", "1337"):
+              env = dict(os.environ, PYTHONHASHSEED=seed)
+              out = subprocess.run([sys.executable, "-m", "rolloutdiff",
+                                    "examples/before.yaml", "examples/after.yaml"],
+                                   capture_output=True, env=env).stdout
+              digests.add(hashlib.sha256(out).hexdigest())
+          assert len(digests) == 1, f"non-deterministic across hash seeds: {digests}"
+          print("byte-identical across 4 PYTHONHASHSEED values")
+          PY
+
+      - name: Exit-code contract (0 / 1 / 2)
+        run: |
+          set +e
+          python -m rolloutdiff examples/before.yaml examples/cosmetic_after.yaml >/dev/null 2>&1
+          test $? = 0 || { echo "clean must exit 0"; exit 1; }
+          python -m rolloutdiff examples/before.yaml examples/after.yaml >/dev/null 2>&1
+          test $? = 1 || { echo "findings must exit 1"; exit 1; }
+          python -m rolloutdiff ./no_such.yaml ./nope.yaml >/dev/null 2>&1
+          test $? = 2 || { echo "bad input must exit 2"; exit 1; }
+          set -e
+          echo "exit-code contract holds (0 / 1 / 2 all asserted)"

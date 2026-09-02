@@ -1,0 +1,31 @@
+# Semantically identical to before.yaml: keys reordered, equivalent quantity
+# spellings (1024Mi == 1Gi, "1" == 1000m), and churn in an annotation that
+# does not affect the running object. rolloutdiff reports nothing.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: "regenerated-by-apply"
+  name: web
+spec:
+  template:
+    metadata:
+      labels: {app: web}
+    spec:
+      containers:
+      - securityContext: {privileged: false}
+        resources:
+          limits: {cpu: 1000m, memory: 1Gi}
+        image: nginx:1.25
+        name: app
+  selector:
+    matchLabels: {app: web}
+  replicas: 3
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: data}
+spec:
+  resources:
+    requests: {storage: 10240Mi}
+  storageClassName: fast

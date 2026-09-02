@@ -1,0 +1,9 @@
+PyYAML>=6.0
+
+# How to run:
+#   pip install -r requirements.txt
+#   python -m rolloutdiff <before-path> <after-path>
+#   python -m pytest tests/ -v
+#
+# This is the ONLY declared dependency (a YAML parser), by design
+# guardrails. Nothing else is imported anywhere in rolloutdiff/ or tests/.

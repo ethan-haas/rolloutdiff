@@ -1,0 +1,4 @@
+apiVersion: acme.example.com/v1
+kind: WidgetFactory
+metadata: {name: wf}
+spec: {throughput: 10, retention: keep}
